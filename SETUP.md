@@ -43,7 +43,7 @@ ssh -T git@github.com
 
 ```bash
 cd /home/proximus2/cursorinstall/ntv-actions-pilot
-git remote add origin git@github.com:YOUR_GITHUB_USER/ntv-actions-pilot.git
+git remote add origin git@github.com:agupta47tv/ntv-actions-pilot.git
 git push -u origin main
 ```
 

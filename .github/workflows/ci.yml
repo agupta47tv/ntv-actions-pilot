@@ -19,10 +19,17 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Run gitleaks CLI directly (avoids gitleaks-action@v2 Node 20 / GITHUB_TOKEN issues).
+      - name: Install gitleaks
+        run: |
+          GITLEAKS_VERSION=8.24.2
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          sudo install -m 755 gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Gitleaks scan
+        run: gitleaks detect --source . --verbose --redact --config .gitleaks.toml
 
   shellcheck:
     name: ShellCheck

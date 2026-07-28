@@ -1,0 +1,20 @@
+title = "ntv-actions-pilot gitleaks config"
+
+[extend]
+useDefault = true
+
+# Documentation examples are placeholders, not real credentials.
+[[rules.allowlists]]
+description = "Setup doc placeholder examples"
+paths = ['''SETUP\.md''', '''README\.md''']
+
+[[rules.allowlists]]
+description = "Env var names in scripts (not values)"
+regexTarget = "match"
+regexes = [
+  '''JENKINS_TOKEN=\$\{\{''',
+  '''JENKINS_USER=\$\{\{''',
+  '''require_env JENKINS''',
+  '''JENKINS_TOKEN=x''',
+  '''JENKINS_USER=x''',
+]
