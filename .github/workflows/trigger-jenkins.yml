@@ -1,0 +1,65 @@
+name: Trigger Jenkins (manual)
+
+# Manual only — does not run on every push.
+# Requires self-hosted runner on network that reaches internal Jenkins.
+on:
+  workflow_dispatch:
+    inputs:
+      project_name:
+        description: PROJECT_NAME
+        type: choice
+        options:
+          - NTVBE_master
+          - NTVBE_1.5_Scarlet
+          - NTVBE_1.4_Scarlet
+        default: NTVBE_master
+      target_name:
+        description: TARGET_NAME
+        type: choice
+        options:
+          - ntv-mv5
+          - nte-mv5
+          - ntv-v5
+        default: ntv-mv5
+      dry_run:
+        description: Dry run (no Jenkins POST)
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  trigger:
+    name: Trigger NTV_BUILD
+    # Switch to ubuntu-latest only after confirming Jenkins is reachable from GitHub.
+    # Default: self-hosted runner on internal network (install GitHub Actions runner on proximus2).
+    runs-on: [self-hosted, linux, ntv-internal]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Connectivity check
+        run: |
+          if [[ -z "${{ secrets.JENKINS_URL }}" ]]; then
+            echo "::error::Set JENKINS_URL, JENKINS_USER, JENKINS_TOKEN in repo Secrets"
+            exit 1
+          fi
+          curl -sf --connect-timeout 5 "${{ secrets.JENKINS_URL }}/api/json" \
+            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); print('Jenkins OK:', d.get('nodeDescription',''))"
+
+      - name: Trigger build
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          SET_PROFILE: false
+          RUN_BUILD: false
+          RUN_APPLY_SECURITY: false
+        run: |
+          chmod +x scripts/trigger-jenkins-api.sh
+          ./scripts/trigger-jenkins-api.sh

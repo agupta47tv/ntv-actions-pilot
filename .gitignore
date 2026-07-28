@@ -1,0 +1,23 @@
+# Secrets and credentials
+.env
+.env.*
+*.pem
+*.key
+id_rsa*
+.vault-token
+*_token.txt
+
+# Firmware / signing artifacts
+*.bin
+*.sao
+*.tbz2
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Logs and temp
+*.log
+/tmp/

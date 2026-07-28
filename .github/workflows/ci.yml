@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 'pilot/**']
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          shellcheck --version
+          shellcheck scripts/*.sh
+
+  validate-scripts:
+    name: Smoke test scripts
+    runs-on: ubuntu-latest
+    needs: shellcheck
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: sample-check.sh dry-run
+        run: |
+          chmod +x scripts/*.sh
+          PROJECT_NAME=NTVBE_master TARGET_NAME=ntv-mv5 \
+            ./scripts/sample-check.sh --dry-run
