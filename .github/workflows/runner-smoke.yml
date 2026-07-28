@@ -1,0 +1,29 @@
+name: Runner smoke test
+
+# Run after self-hosted runner is registered (manual).
+on:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: Self-hosted runner check
+    runs-on: [self-hosted, linux, ntv-internal]
+    steps:
+      - name: Runner identity
+        run: |
+          echo "hostname=$(hostname)"
+          echo "user=$(whoami)"
+          echo "pwd=$(pwd)"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Internal network — Jenkins TCP
+        run: |
+          curl -sf --connect-timeout 5 -o /dev/null -w "Jenkins HTTP %{http_code}\n" \
+            "http://10.67.254.53:8080/login"
+
+      - name: Scripts executable
+        run: |
+          chmod +x scripts/*.sh
+          PROJECT_NAME=NTVBE_master TARGET_NAME=ntv-mv5 ./scripts/sample-check.sh --dry-run
