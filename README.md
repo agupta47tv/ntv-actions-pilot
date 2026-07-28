@@ -89,3 +89,7 @@ gitleaks detect --source . --verbose
 - Jenkins: `NTV_BUILD` on `10.67.254.53:8080`
 - Trigger script: `/tmp/jenkins_script_53/scripts/trigger_build.sh`
 - Internal Git: `git@10.67.254.66`
+
+## CI pilot test
+
+This line was added on branch `pilot/test-pr-ci` to verify GitHub Actions runs on pull requests.
