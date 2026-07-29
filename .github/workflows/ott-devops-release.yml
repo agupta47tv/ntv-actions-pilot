@@ -1,0 +1,192 @@
+name: OTT DevOps release
+
+# OTT / IPTV firmware DevOps orchestration from GitHub.
+# Runs on self-hosted runner (internal network) for Jenkins; hosted OK for validate-only.
+#
+# Secrets required on this repo:
+#   JENKINS_URL, JENKINS_USER, JENKINS_TOKEN
+#
+# Vantiva Artifactory steps require a proximus4 runner (future) — currently manual instructions.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: What to run
+        type: choice
+        options:
+          - validate_only
+          - trigger_jenkins
+          - trigger_and_wait
+          - full_release_notes
+        default: validate_only
+      project_name:
+        description: PROJECT_NAME
+        type: choice
+        options:
+          - NTVBE_master
+          - NTVBE_master_resilience
+          - NTVBE_1.5_Scarlet
+          - NTVBE_1.4_Scarlet
+        default: NTVBE_master
+      target_name:
+        description: TARGET_NAME
+        type: choice
+        options:
+          - ntv-mv5
+          - nte-mv5
+          - ntv-v5
+        default: ntv-mv5
+      target_version:
+        description: TARGET_VERSION (empty = auto sprint increment)
+        type: string
+        default: ""
+      build_preset:
+        description: Jenkins stage preset
+        type: choice
+        options:
+          - full_dev_build
+          - resilience_build
+          - security_only
+        default: full_dev_build
+      wait_timeout_minutes:
+        description: Max wait for Jenkins (trigger_and_wait)
+        type: number
+        default: 240
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate environment
+    runs-on: ubuntu-latest
+    steps:
+      - name: OTT DevOps checklist
+        run: |
+          cat <<'EOF'
+          OTT DevOps pipeline map:
+            1. PR gates (gitleaks/shellcheck)     → GitHub hosted / reusable workflow
+            2. Jenkins NTV_BUILD (genbox/sign)    → self-hosted runner proximus2
+            3. Vantiva Artifactory (inbox/outbox) → proximus4 (manual or future runner)
+            4. QC / notify                      → Jenkins RUN_NOTIFY or post_action.py
+          EOF
+      - name: Check required secrets exist
+        if: inputs.operation != 'validate_only'
+        run: |
+          test -n "${{ secrets.JENKINS_URL }}" || { echo "::error::Missing JENKINS_URL"; exit 1; }
+          test -n "${{ secrets.JENKINS_USER }}" || { echo "::error::Missing JENKINS_USER"; exit 1; }
+          test -n "${{ secrets.JENKINS_TOKEN }}" || { echo "::error::Missing JENKINS_TOKEN"; exit 1; }
+          echo "Jenkins secrets OK"
+
+  jenkins:
+    name: Jenkins NTV_BUILD
+    needs: validate
+    if: inputs.operation == 'trigger_jenkins' || inputs.operation == 'trigger_and_wait' || inputs.operation == 'full_release_notes'
+    runs-on: [self-hosted, linux, ntv-internal]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Map build preset
+        id: preset
+        run: |
+          PRESET="${{ inputs.build_preset }}"
+          SET_PROFILE=false; RUN_CREATE_EBUILD=false; RUN_BUILD=false
+          RUN_CHECK_PREBUILD=false; RUN_PUSH_EBUILD=false; RUN_SCP_PREBUILD=false
+          RUN_APPLY_SECURITY=false
+          case "$PRESET" in
+            full_dev_build)
+              SET_PROFILE=true; RUN_CREATE_EBUILD=true; RUN_BUILD=true
+              RUN_CHECK_PREBUILD=true; RUN_PUSH_EBUILD=true; RUN_SCP_PREBUILD=true
+              RUN_APPLY_SECURITY=true ;;
+            resilience_build)
+              RUN_CREATE_EBUILD=true; RUN_BUILD=true; RUN_CHECK_PREBUILD=true
+              RUN_PUSH_EBUILD=true; RUN_SCP_PREBUILD=true; RUN_APPLY_SECURITY=true ;;
+            security_only)
+              RUN_APPLY_SECURITY=true ;;
+          esac
+          echo "set_profile=$SET_PROFILE" >> "$GITHUB_OUTPUT"
+          echo "run_create_ebuild=$RUN_CREATE_EBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_build=$RUN_BUILD" >> "$GITHUB_OUTPUT"
+          echo "run_check_prebuild=$RUN_CHECK_PREBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_push_ebuild=$RUN_PUSH_EBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_scp_prebuild=$RUN_SCP_PREBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_apply_security=$RUN_APPLY_SECURITY" >> "$GITHUB_OUTPUT"
+
+      - name: Trigger Jenkins
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          TARGET_VERSION: ${{ inputs.target_version }}
+          SET_PROFILE: ${{ steps.preset.outputs.set_profile }}
+          RUN_CREATE_EBUILD: ${{ steps.preset.outputs.run_create_ebuild }}
+          RUN_BUILD: ${{ steps.preset.outputs.run_build }}
+          RUN_CHECK_PREBUILD: ${{ steps.preset.outputs.run_check_prebuild }}
+          RUN_PUSH_EBUILD: ${{ steps.preset.outputs.run_push_ebuild }}
+          RUN_SCP_PREBUILD: ${{ steps.preset.outputs.run_scp_prebuild }}
+          RUN_APPLY_SECURITY: ${{ steps.preset.outputs.run_apply_security }}
+          DRY_RUN: false
+        run: |
+          chmod +x scripts/trigger-jenkins-api.sh
+          ./scripts/trigger-jenkins-api.sh
+
+      - name: Wait for Jenkins completion
+        if: inputs.operation == 'trigger_and_wait' || inputs.operation == 'full_release_notes'
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+          PROJECT_NAME: ${{ inputs.project_name }}
+          TARGET_NAME: ${{ inputs.target_name }}
+          TIMEOUT_SEC: ${{ inputs.wait_timeout_minutes * 60 }}
+        run: |
+          chmod +x scripts/poll-jenkins-build.sh
+          ./scripts/poll-jenkins-build.sh
+
+  vantiva:
+    name: Vantiva handoff (manual)
+    needs: jenkins
+    if: inputs.operation == 'full_release_notes'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post-build Vantiva steps on proximus4
+        run: |
+          cat <<EOF
+          === OTT DevOps — Vantiva (manual on proximus4) ===
+
+          Jenkins build completed. Run on proximus4@10.67.254.67:
+
+            ssh proximus4@10.67.254.67
+            cd /tmp/utilities-scripts && git pull
+            export VAULT_ADDR=http://127.0.0.1:8200
+            source vault-load-secrets.sh all
+
+            # List signed artifacts staging
+            ./artifactory-sync.sh list-inbox
+            ./artifactory-sync.sh list-outbox
+
+            # Upload unsigned .bin (example path — adjust version)
+            ./artifactory-sync.sh upload /data/staging/genbox-ng/rsi-security-builds/${{ inputs.project_name }}/${{ inputs.target_name }}/
+
+            # After Vantiva signs — download .sao
+            ./artifactory-sync.sh download
+
+          GitHub Actions cannot run this until a self-hosted runner is registered ON proximus4.
+          EOF
+
+  summary:
+    name: Release summary
+    needs: [validate, jenkins, vantiva]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: |
+          echo "Operation: ${{ inputs.operation }}"
+          echo "Project:   ${{ inputs.project_name }}"
+          echo "Target:    ${{ inputs.target_name }}"
+          echo "Version:   ${{ inputs.target_version || 'auto' }}"
+          echo "Preset:    ${{ inputs.build_preset }}"
+          echo "Jenkins:   http://10.67.254.53:8080/job/NTV_BUILD/"
