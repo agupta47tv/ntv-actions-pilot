@@ -178,7 +178,7 @@ jobs:
 
   summary:
     name: Release summary
-    needs: [validate, jenkins, vantiva]
+    needs: [validate, jenkins]
     if: always()
     runs-on: ubuntu-latest
     steps:
