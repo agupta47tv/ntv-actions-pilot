@@ -1,17 +1,28 @@
 name: Trigger Jenkins (manual)
 
-# Manual only — does not run on every push.
-# Requires self-hosted runner on network that reaches internal Jenkins.
+# Requires self-hosted runner (proximus2) + repo secrets:
+#   JENKINS_URL, JENKINS_USER, JENKINS_TOKEN
 on:
   workflow_dispatch:
     inputs:
+      preset:
+        description: Build preset (maps to trigger_build.sh)
+        type: choice
+        options:
+          - dry_run
+          - full_dev_build
+          - resilience_build
+          - security_only
+        default: dry_run
       project_name:
         description: PROJECT_NAME
         type: choice
         options:
           - NTVBE_master
+          - NTVBE_master_resilience
           - NTVBE_1.5_Scarlet
           - NTVBE_1.4_Scarlet
+          - NTVBE_1.4_Scarlet_resilience
         default: NTVBE_master
       target_name:
         description: TARGET_NAME
@@ -21,10 +32,18 @@ on:
           - nte-mv5
           - ntv-v5
         default: ntv-mv5
-      dry_run:
-        description: Dry run (no Jenkins POST)
+      target_version:
+        description: TARGET_VERSION (empty = auto-increment sprint)
+        type: string
+        default: ""
+      new_sprint:
+        description: NEW_SPRINT
         type: boolean
-        default: true
+        default: false
+      run_notify:
+        description: RUN_NOTIFY (email distribution list)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -32,34 +51,136 @@ permissions:
 jobs:
   trigger:
     name: Trigger NTV_BUILD
-    # Switch to ubuntu-latest only after confirming Jenkins is reachable from GitHub.
-    # Default: self-hosted runner on internal network (install GitHub Actions runner on proximus2).
     runs-on: [self-hosted, linux, ntv-internal]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Connectivity check
+      - name: Validate secrets
         run: |
-          if [[ -z "${{ secrets.JENKINS_URL }}" ]]; then
-            echo "::error::Set JENKINS_URL, JENKINS_USER, JENKINS_TOKEN in repo Secrets"
-            exit 1
-          fi
-          curl -sf --connect-timeout 5 "${{ secrets.JENKINS_URL }}/api/json" \
-            --user "${{ secrets.JENKINS_USER }}:${{ secrets.JENKINS_TOKEN }}" \
+          for s in JENKINS_URL JENKINS_USER JENKINS_TOKEN; do
+            if [[ -z "${{ secrets.JENKINS_URL }}" && "$s" == "JENKINS_URL" ]]; then echo "::error::Missing $s"; exit 1; fi
+          done
+          test -n "${{ secrets.JENKINS_URL }}" || { echo "::error::Missing JENKINS_URL secret"; exit 1; }
+          test -n "${{ secrets.JENKINS_USER }}" || { echo "::error::Missing JENKINS_USER secret"; exit 1; }
+          test -n "${{ secrets.JENKINS_TOKEN }}" || { echo "::error::Missing JENKINS_TOKEN secret"; exit 1; }
+
+      - name: Connectivity check
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+        run: |
+          curl -sf --connect-timeout 5 "${JENKINS_URL}/api/json" \
+            --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
             | python3 -c "import sys,json; d=json.load(sys.stdin); print('Jenkins OK:', d.get('nodeDescription',''))"
 
-      - name: Trigger build
+      - name: Map preset to Jenkins parameters
+        id: params
+        run: |
+          PRESET="${{ inputs.preset }}"
+          # Defaults: all false
+          DRY_RUN=false
+          SET_PROFILE=false
+          RUN_CREATE_EBUILD=false
+          RUN_BUILD=false
+          RUN_CHECK_PREBUILD=false
+          RUN_PUSH_EBUILD=false
+          RUN_SCP_PREBUILD=false
+          RUN_ABR_SECURITY=false
+          RUN_APPLY_SECURITY=false
+          GIT_LOG_MODULE=false
+          RUN_NOTIFY="${{ inputs.run_notify }}"
+          NOTIFY_AMIT=false
+          NOTIFY_AMIT_ONLY=false
+
+          case "$PRESET" in
+            dry_run)
+              DRY_RUN=true
+              ;;
+            full_dev_build)
+              SET_PROFILE=true
+              RUN_CREATE_EBUILD=true
+              RUN_BUILD=true
+              RUN_CHECK_PREBUILD=true
+              RUN_PUSH_EBUILD=true
+              RUN_SCP_PREBUILD=true
+              RUN_APPLY_SECURITY=true
+              ;;
+            resilience_build)
+              SET_PROFILE=false
+              RUN_CREATE_EBUILD=true
+              RUN_BUILD=true
+              RUN_CHECK_PREBUILD=true
+              RUN_PUSH_EBUILD=true
+              RUN_SCP_PREBUILD=true
+              RUN_APPLY_SECURITY=true
+              ;;
+            security_only)
+              RUN_APPLY_SECURITY=true
+              ;;
+          esac
+
+          echo "dry_run=$DRY_RUN" >> "$GITHUB_OUTPUT"
+          echo "set_profile=$SET_PROFILE" >> "$GITHUB_OUTPUT"
+          echo "run_create_ebuild=$RUN_CREATE_EBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_build=$RUN_BUILD" >> "$GITHUB_OUTPUT"
+          echo "run_check_prebuild=$RUN_CHECK_PREBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_push_ebuild=$RUN_PUSH_EBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_scp_prebuild=$RUN_SCP_PREBUILD" >> "$GITHUB_OUTPUT"
+          echo "run_abr_security=$RUN_ABR_SECURITY" >> "$GITHUB_OUTPUT"
+          echo "run_apply_security=$RUN_APPLY_SECURITY" >> "$GITHUB_OUTPUT"
+          echo "git_log_module=$GIT_LOG_MODULE" >> "$GITHUB_OUTPUT"
+          echo "run_notify=$RUN_NOTIFY" >> "$GITHUB_OUTPUT"
+          echo "notify_amit=$NOTIFY_AMIT" >> "$GITHUB_OUTPUT"
+          echo "notify_amit_only=$NOTIFY_AMIT_ONLY" >> "$GITHUB_OUTPUT"
+
+          echo "=== Build configuration ==="
+          echo "  preset=${PRESET}"
+          echo "  project=${{ inputs.project_name }}"
+          echo "  target=${{ inputs.target_name }}"
+          echo "  version=${{ inputs.target_version }} (empty=auto)"
+          echo "  SET_PROFILE=$SET_PROFILE RUN_BUILD=$RUN_BUILD RUN_APPLY_SECURITY=$RUN_APPLY_SECURITY"
+
+      - name: Trigger NTV_BUILD
         env:
           JENKINS_URL: ${{ secrets.JENKINS_URL }}
           JENKINS_USER: ${{ secrets.JENKINS_USER }}
           JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
           PROJECT_NAME: ${{ inputs.project_name }}
           TARGET_NAME: ${{ inputs.target_name }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          SET_PROFILE: false
-          RUN_BUILD: false
-          RUN_APPLY_SECURITY: false
+          TARGET_VERSION: ${{ inputs.target_version }}
+          NEW_SPRINT: ${{ inputs.new_sprint }}
+          DRY_RUN: ${{ steps.params.outputs.dry_run }}
+          SET_PROFILE: ${{ steps.params.outputs.set_profile }}
+          RUN_CREATE_EBUILD: ${{ steps.params.outputs.run_create_ebuild }}
+          RUN_BUILD: ${{ steps.params.outputs.run_build }}
+          RUN_CHECK_PREBUILD: ${{ steps.params.outputs.run_check_prebuild }}
+          RUN_PUSH_EBUILD: ${{ steps.params.outputs.run_push_ebuild }}
+          RUN_SCP_PREBUILD: ${{ steps.params.outputs.run_scp_prebuild }}
+          RUN_ABR_SECURITY: ${{ steps.params.outputs.run_abr_security }}
+          RUN_APPLY_SECURITY: ${{ steps.params.outputs.run_apply_security }}
+          GIT_LOG_MODULE: ${{ steps.params.outputs.git_log_module }}
+          RUN_NOTIFY: ${{ steps.params.outputs.run_notify }}
+          NOTIFY_AMIT: ${{ steps.params.outputs.notify_amit }}
+          NOTIFY_AMIT_ONLY: ${{ steps.params.outputs.notify_amit_only }}
         run: |
           chmod +x scripts/trigger-jenkins-api.sh
           ./scripts/trigger-jenkins-api.sh
+
+      - name: Verify Jenkins queued build
+        if: steps.params.outputs.dry_run != 'true'
+        env:
+          JENKINS_URL: ${{ secrets.JENKINS_URL }}
+          JENKINS_USER: ${{ secrets.JENKINS_USER }}
+          JENKINS_TOKEN: ${{ secrets.JENKINS_TOKEN }}
+        run: |
+          sleep 5
+          curl -sf --user "${JENKINS_USER}:${JENKINS_TOKEN}" \
+            "${JENKINS_URL}/job/NTV_BUILD/lastBuild/api/json?tree=number,displayName,building,result,url" \
+            | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print('Last build:', d.get('displayName'), 'building=', d.get('building'), 'result=', d.get('result'))
+          print('URL:', d.get('url'))
+          "
